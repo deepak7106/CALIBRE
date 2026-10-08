@@ -86,6 +86,24 @@ Live mode uses a fresh headless Chromium context per scan, no user profile or
 credentials, bounded timeouts, download interception, and no downloaded-file
 execution. It is not enabled by default and does not bypass gateway validation.
 
+Downloaded files can also be inspected offline with
+`trustshield.browser.analyze_download`. It computes a SHA-256 digest, identifies
+common file signatures, checks extension mismatches, and performs bounded PDF,
+Office ZIP, archive, image, text, and PE static checks. ZIP members and
+uncompressed sizes are capped; no downloaded bytes are imported, opened as a
+document, or executed.
+
+For automatic live inspection during `POST /api/analyze/url`, set:
+
+```powershell
+$env:TRUSTSHIELD_LIVE_BROWSER = "true"
+```
+
+Without that opt-in, the API uses the deterministic offline inspector. A
+shortener such as `tinyurl.com` is labeled `url_shortener_detected` but is not
+treated as malicious by that label alone. Actual shortener resolution requires
+the opt-in live browser and an installed Chromium binary.
+
 ## Secure scan page
 
 Run the backend and frontend separately:

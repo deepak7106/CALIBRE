@@ -8,3 +8,11 @@ risk:
     ml: 0.20
     identity: 0.10
     correlation: 0.15
+url:
+  shortener_hosts:
+    - tinyurl.com
+    - bit.ly
+    - t.co
+    - is.gd
+    - cutt.ly
+    - shorturl.at

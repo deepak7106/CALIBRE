@@ -2,12 +2,22 @@
 
 import ipaddress
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 
+import yaml
 from trustshield.models import AnalysisContext, Indicator, StageResult
 
 BRANDS = {"microsoft.com", "paypal.com", "google.com", "apple.com", "bank.example"}
 BLOCKLIST = {"malware.test", "phishing.test", "credential-harvest.test"}
+
+
+def _shortener_hosts() -> set[str]:
+    path = Path("config/risk.yaml")
+    if not path.exists():
+        return {"tinyurl.com", "bit.ly", "t.co", "is.gd", "cutt.ly", "shorturl.at"}
+    config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return set(config.get("url", {}).get("shortener_hosts", []))
 
 
 def _private_host(host: str) -> bool:
@@ -45,6 +55,12 @@ class URLAnalysisStage:
                 indicators.append(Indicator(
                     name="local_threat_intel_match", severity="critical",
                     description="Domain matches the local threat-intelligence blocklist.",
+                    evidence=item, stage=self.name,
+                ))
+            if host in _shortener_hosts():
+                indicators.append(Indicator(
+                    name="url_shortener_detected", severity="low",
+                    description="URL uses a shortening service and requires destination inspection.",
                     evidence=item, stage=self.name,
                 ))
             if any(host.endswith(f".{brand}") and host != brand for brand in BRANDS):

@@ -7,6 +7,7 @@ requests the destination URL or redirects a client to it.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from trustshield.engine.risk import assess
 from trustshield.gateway import SecureURLGateway, URLValidationError
-from trustshield.models import AnalysisContext, AnalysisResult, MessageInput
+from trustshield.models import AnalysisContext, AnalysisResult, MessageInput, Indicator, StageResult
 from trustshield.stages.base import run_stage
 from trustshield.stages.url_analysis import URLAnalysisStage
 from trustshield.storage.db import Base, create_store
@@ -26,7 +27,6 @@ from trustshield.correlation import CorrelationEngine
 from trustshield.explainability import build_explanation
 from trustshield.fusion import fuse
 from trustshield.correlation.campaigns import correlate_messages
-from trustshield.models import Indicator
 from trustshield.browser import BrowserInspection, BrowserInspector, BrowserInspectionError
 
 
@@ -34,6 +34,7 @@ class URLAnalyzeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str = Field(min_length=1, max_length=4096)
+    browser_fixture: dict = Field(default_factory=dict)
 
 
 class URLScanResponse(BaseModel):
@@ -43,11 +44,14 @@ class URLScanResponse(BaseModel):
     status: str
     analysis: AnalysisResult
     warnings: list[str]
+    browser: dict = Field(default_factory=dict)
+    downloads: list[dict] = Field(default_factory=list)
+    files: list[dict] = Field(default_factory=list)
 
 
 class BrowserInspectRequest(BaseModel):
     simulate: bool = True
-    fixture: dict = {}
+    fixture: dict = Field(default_factory=dict)
 
 
 class URLScanRecord(Base):
@@ -57,6 +61,27 @@ class URLScanRecord(Base):
     destination_url: Mapped[str] = mapped_column(Text)
     payload: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+def _browser_diagnostics(
+    *,
+    enabled: bool,
+    inspection: BrowserInspection | None = None,
+    error: str | None = None,
+) -> dict:
+    """Expose safe browser lifecycle facts without headers, cookies, or credentials."""
+    return {
+        "browser_enabled": enabled,
+        "browser_mode": "live" if enabled else "simulation",
+        "browser_inspection_status": (
+            inspection.inspection_status if inspection is not None else "unknown"
+        ),
+        "browser_error": error or (inspection.error if inspection is not None else None),
+        "redirect_count": len(inspection.redirects) if inspection is not None else 0,
+        "final_url": inspection.final_url if inspection is not None else None,
+        "browser_indicator_count": len(inspection.indicators) if inspection is not None else 0,
+        "final_destination_indicator_count": 0,
+    }
 
 
 def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
@@ -91,13 +116,108 @@ def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
         context = AnalysisContext(message=message)
         context.masked_text = decision.destination_url
         run_stage(URLAnalysisStage(), context)
+        scan_id = f"scan-{uuid4().hex}"
+        live_browser = os.getenv("TRUSTSHIELD_LIVE_BROWSER", "").lower() == "true"
+        browser_diagnostics = _browser_diagnostics(enabled=live_browser)
+        try:
+            inspection = BrowserInspector(gateway).inspect(
+                scan_id, decision.destination_url, simulate=not live_browser,
+                fixture=request.browser_fixture,
+            )
+            app.state.browser_inspections[scan_id] = inspection
+            browser_diagnostics = _browser_diagnostics(
+                enabled=live_browser, inspection=inspection,
+            )
+            browser_indicators = [
+                Indicator(
+                    id=item.id, name=item.name, severity=item.severity,
+                    description=item.description, evidence=item.evidence,
+                    stage="browser_inspection",
+                )
+                for item in inspection.indicators
+            ]
+            if inspection.file_analysis_errors:
+                browser_indicators.append(Indicator(
+                    name="file_analysis_incomplete", severity="medium",
+                    description="Downloaded content could not be fully analyzed statically.",
+                    evidence={"errors": inspection.file_analysis_errors},
+                    stage="browser_inspection",
+                ))
+                browser_indicators.append(Indicator(
+                    name="download_capture_incomplete", severity="medium",
+                    description="A download was observed, but its artifact could not be captured or analyzed.",
+                    evidence={"errors": inspection.file_analysis_errors},
+                    stage="browser_inspection",
+                ))
+            context.append(StageResult(
+                stage="browser_inspection",
+                status=(
+                    "ok" if inspection.inspection_status == "complete"
+                    else "unknown"
+                ),
+                indicators=browser_indicators,
+                data={
+                    "browser_inspection": inspection.model_dump(mode="json"),
+                    "browser_diagnostics": browser_diagnostics,
+                },
+                error=inspection.error,
+            ))
+            final_url = inspection.final_url
+            if final_url and final_url != decision.destination_url:
+                try:
+                    final_message = MessageInput(
+                        sender=message.sender, text=final_url, urls=[final_url],
+                        source="browser_final_destination", consent=True,
+                    )
+                    final_context = AnalysisContext(message=final_message)
+                    final_context.masked_text = final_url
+                    run_stage(URLAnalysisStage(), final_context)
+                    final_stage = final_context.stages[-1]
+                    final_stage.stage = "final_destination_analysis"
+                    context.append(final_stage)
+                    browser_diagnostics["final_destination_indicator_count"] = len(
+                        final_stage.indicators
+                    )
+                except URLValidationError as exc:
+                    context.append(StageResult(
+                        stage="final_destination_analysis", status="unknown",
+                        error=str(exc),
+                    ))
+        except BrowserInspectionError as exc:
+            incomplete = Indicator(
+                name="destination_inspection_incomplete", severity="medium",
+                description=(
+                    "Destination inspection was incomplete; the shortened URL's "
+                    "final destination could not be verified."
+                ),
+                evidence={"error": str(exc)}, stage="browser_inspection",
+            )
+            context.append(StageResult(
+                stage="browser_inspection", status="unknown",
+                indicators=[incomplete],
+                error=str(exc),
+                data={
+                    "browser_inspection": {"inspection_status": "unknown"},
+                    "browser_diagnostics": browser_diagnostics,
+                },
+            ))
+            browser_diagnostics = _browser_diagnostics(
+                enabled=live_browser, error=str(exc),
+            )
+        context.data["browser_diagnostics"] = browser_diagnostics
+        context.data["browser_inspection_available"] = not any(
+            stage.stage == "browser_inspection" and stage.status == "unknown"
+            for stage in context.stages
+        )
         graph = CorrelationEngine().build(context)
         context.data["trust_graph"] = graph.model_dump(mode="json")
         context.data["fusion"] = fuse(context)
         result = assess(context)
+        result.uncertainty = any(stage.status == "unknown" for stage in context.stages)
         result.trust_graph = graph.model_dump(mode="json")
-        result.explanation_data = build_explanation(context.indicators)
-        scan_id = f"scan-{uuid4().hex}"
+        result.explanation_data = build_explanation(
+            context.indicators, uncertainty=result.uncertainty,
+        )
         with Session(engine) as session:
             existing = session.scalars(select(URLScanRecord)).all()
             related = [{
@@ -147,6 +267,11 @@ def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
                 created_at=datetime.now(timezone.utc),
             ))
             session.commit()
+        browser_data = next(
+            (stage.data.get("browser_inspection") for stage in result.stages
+             if stage.stage == "browser_inspection"),
+            {},
+        )
         return URLScanResponse(
             scan_id=scan_id,
             destination_url=decision.destination_url,
@@ -154,6 +279,13 @@ def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
             status="complete",
             analysis=result,
             warnings=decision.warnings,
+            browser={
+                "status": browser_data.get("inspection_status"),
+                "final_url": browser_data.get("final_url"),
+                "redirect_count": len(browser_data.get("redirects", [])),
+            },
+            downloads=browser_data.get("downloads", []),
+            files=browser_data.get("files", []),
         )
 
     @app.get("/api/scan/{scan_id}", response_model=URLScanResponse)
@@ -171,6 +303,7 @@ def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
             status="complete",
             analysis=result,
             warnings=decision.warnings,
+            browser={},
         )
 
     @app.get("/api/scan/{scan_id}/evidence")
@@ -183,6 +316,10 @@ def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
             "risk_level": response.analysis.risk_level,
             "score": response.analysis.score,
             "confidence": response.analysis.confidence,
+            "stages": [
+                stage.model_dump(mode="json")
+                for stage in response.analysis.stages
+            ],
         }
 
     @app.post("/api/scan/{scan_id}/inspect", response_model=BrowserInspection)

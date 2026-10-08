@@ -7,7 +7,31 @@ def build_explanation(indicators, uncertainty: bool = False) -> dict:
     ]
     uncertainties = []
     if uncertainty:
-        uncertainties.append({"text": "Some contextual evidence was unavailable.", "indicator_ids": []})
+        incomplete = [
+            indicator for indicator in indicators
+            if indicator.name == "destination_inspection_incomplete"
+        ]
+        shortener = any(
+            indicator.name == "url_shortener_detected" for indicator in indicators
+        )
+        if incomplete:
+            text = (
+                "The destination initiated a download before a document "
+                "destination could be verified. TrustShield captured the "
+                "content inertly without executing it, so the destination "
+                "could not be fully classified as safe."
+            )
+            if shortener:
+                text += " The original URL uses a shortening service."
+            uncertainties.append({
+                "text": text,
+                "indicator_ids": [indicator.id for indicator in incomplete],
+            })
+        else:
+            uncertainties.append({
+                "text": "Some analysis evidence was unavailable; the result is not verified safe.",
+                "indicator_ids": [],
+            })
     return {
         "summary": "TrustShield found supporting evidence for this assessment." if reasons
         else "TrustShield found no significant threat indicators.",

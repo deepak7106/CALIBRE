@@ -14,6 +14,18 @@ def test_url_api_scans_without_opening_destination(tmp_path):
     assert body["analysis"]["stages"][0]["stage"] == "url_analysis"
     assert body["analysis"]["stages"][0]["data"]["url_evidence"][0]["domain"] == "example.com"
     assert body["analysis"]["stages"][0]["data"]["url_evidence"][0]["url"].startswith("https://")
+    assert any(stage["stage"] == "browser_inspection" for stage in body["analysis"]["stages"])
+
+
+def test_shortener_is_inspected_but_not_marked_malicious_by_itself(tmp_path):
+    client = TestClient(create_app(tmp_path / "api.db"))
+    response = client.post("/api/analyze/url", json={"url": "https://tinyurl.com/Stack-0610-EX"})
+
+    assert response.status_code == 200
+    body = response.json()
+    names = {item["name"] for item in body["analysis"]["indicators"]}
+    assert "url_shortener_detected" in names
+    assert body["analysis"]["risk_level"] != "CRITICAL"
 
 
 def test_url_api_returns_blocklist_evidence(tmp_path):

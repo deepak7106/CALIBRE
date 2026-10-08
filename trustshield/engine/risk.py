@@ -7,6 +7,18 @@ from trustshield.risk.hybrid import hybrid_components
 
 def assess(context: AnalysisContext) -> AnalysisResult:
     indicators = context.indicators
+    browser_unknown = any(
+        stage.stage == "browser_inspection" and stage.status == "unknown"
+        for stage in context.stages
+    )
+    final_destination_verified = any(
+        stage.stage == "final_destination_analysis" and stage.status == "ok"
+        for stage in context.stages
+    )
+    explicit_safe_destination = any(
+        indicator.name in {"verified_safe_destination", "trusted_destination_verified"}
+        for indicator in indicators
+    )
     weights = {"info": 0, "low": 8, "medium": 18, "high": 30, "critical": 45}
     rule_score = min(100.0, sum(weights[i.severity] for i in indicators))
     predicted, ml_confidence = classify(context.masked_text or context.message.text)
@@ -35,14 +47,23 @@ def assess(context: AnalysisContext) -> AnalysisResult:
         risk, action = "MEDIUM", "warn and require user review"
     else:
         risk, action = "LOW", "allow"
+    if (
+        browser_unknown and not final_destination_verified
+        and not explicit_safe_destination and risk == "LOW"
+    ):
+        risk, action = "MEDIUM", "warn and require user review"
     category = predicted
-    if any(i.name == "credential_request" for i in indicators):
+    if any(i.name in {"credential_request", "browser_credential_collection"} for i in indicators):
         category = "Phishing"
     elif any(i.name == "financial_request" for i in indicators) and any(
         i.name == "authority_impersonation" for i in indicators
     ):
         category = "Impersonation"
-    cited = "; ".join(f"{i.id}: {i.description}" for i in indicators) or "No threat indicators were observed."
+    elif browser_unknown and not final_destination_verified and not explicit_safe_destination:
+        category = "Suspicious"
+    cited = "; ".join(f"{i.id}: {i.description}" for i in indicators)
+    if not cited:
+        cited = "No threat indicators were observed."
     explanation = f"Classified as {category}. Evidence: {cited}"
     confidence = min(99.0, max(10.0, (ml_confidence + min(100.0, len(indicators) * 20)) / 2))
     if missing_component:
