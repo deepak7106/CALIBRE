@@ -1,0 +1,10 @@
+correlation:
+  time_window_minutes: 60
+  content_similarity_threshold: 0.75
+  campaign_min_messages: 2
+risk:
+  weights:
+    rules: 0.55
+    ml: 0.20
+    identity: 0.10
+    correlation: 0.15

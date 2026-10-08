@@ -1,0 +1,5 @@
+llm_reasoner:
+  primary: openrouter/free
+  fallbacks:
+    - nvidia/nemotron-3-super-120b-a12b:free
+allow_remote_llm: true

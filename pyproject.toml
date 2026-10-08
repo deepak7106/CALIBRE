@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trustshield"
+version = "0.1.0"
+description = "Explainable, multi-stage message threat detection prototype"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.7,<3",
+  "scikit-learn>=1.4,<2",
+  "PyYAML>=6.0,<7",
+  "SQLAlchemy>=2.0,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0,<9"]
+
+[project.scripts]
+trustshield = "trustshield.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["trustshield*"]

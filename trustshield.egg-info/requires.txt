@@ -1,0 +1,8 @@
+pydantic<3,>=2.7
+scikit-learn<2,>=1.4
+PyYAML<7,>=6.0
+SQLAlchemy<3,>=2.0
+fastapi<1,>=0.115
+
+[test]
+pytest<9,>=8.0
