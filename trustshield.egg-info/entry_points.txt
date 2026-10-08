@@ -1,2 +1,0 @@
-[console_scripts]
-trustshield = trustshield.cli:main

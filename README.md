@@ -8,6 +8,7 @@ TrustShield is an explainable, multi-stage message threat detection prototype.
 trustshield/
   gateway/                 # validate/encode destinations; never direct-redirects
   api/                     # FastAPI URL scan endpoint and evidence retrieval
+  browser/                 # disposable Playwright inspector and offline fixtures
 frontend/                  # React/Vite secure scan page
   models/schemas.py       # Indicator, AnalysisContext, stage/result contracts
   stages/                 # ingestion, preprocessing, and text analysis
@@ -63,6 +64,27 @@ stores the scan in SQLite, and returns a scan ID plus evidence. `GET
 /api/scan/{scan_id}` retrieves the result and `GET
 /api/scan/{scan_id}/evidence` returns the explainable evidence view. These
 endpoints never fetch or redirect to the submitted destination.
+
+## Browser inspection
+
+The browser layer is opt-in and validates the destination through the secure
+gateway before starting. Tests and demos use the offline simulation endpoint:
+
+```powershell
+POST /api/scan/{scan_id}/inspect
+{"simulate": true, "fixture": {...}}
+```
+
+For live inspection, install the optional dependency and browser binary:
+
+```powershell
+python -m pip install -e ".[browser]"
+playwright install chromium
+```
+
+Live mode uses a fresh headless Chromium context per scan, no user profile or
+credentials, bounded timeouts, download interception, and no downloaded-file
+execution. It is not enabled by default and does not bypass gateway validation.
 
 ## Secure scan page
 

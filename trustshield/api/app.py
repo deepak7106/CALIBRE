@@ -27,6 +27,7 @@ from trustshield.explainability import build_explanation
 from trustshield.fusion import fuse
 from trustshield.correlation.campaigns import correlate_messages
 from trustshield.models import Indicator
+from trustshield.browser import BrowserInspection, BrowserInspector, BrowserInspectionError
 
 
 class URLAnalyzeRequest(BaseModel):
@@ -42,6 +43,11 @@ class URLScanResponse(BaseModel):
     status: str
     analysis: AnalysisResult
     warnings: list[str]
+
+
+class BrowserInspectRequest(BaseModel):
+    simulate: bool = True
+    fixture: dict = {}
 
 
 class URLScanRecord(Base):
@@ -66,6 +72,7 @@ def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
     )
     app.state.engine = engine
     app.state.gateway = gateway
+    app.state.browser_inspections = {}
 
     @app.post("/api/analyze/url", response_model=URLScanResponse)
     def analyze_url(request: URLAnalyzeRequest) -> URLScanResponse:
@@ -177,6 +184,29 @@ def create_app(database_path: str | Path = "trustshield.db") -> FastAPI:
             "score": response.analysis.score,
             "confidence": response.analysis.confidence,
         }
+
+    @app.post("/api/scan/{scan_id}/inspect", response_model=BrowserInspection)
+    def inspect_scan(scan_id: str, request: BrowserInspectRequest) -> BrowserInspection:
+        with Session(engine) as session:
+            record = session.scalar(select(URLScanRecord).where(URLScanRecord.scan_id == scan_id))
+        if record is None:
+            raise HTTPException(status_code=404, detail="scan not found")
+        try:
+            inspection = BrowserInspector(gateway).inspect(
+                scan_id, record.destination_url,
+                simulate=request.simulate, fixture=request.fixture,
+            )
+        except (URLValidationError, BrowserInspectionError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        app.state.browser_inspections[scan_id] = inspection
+        return inspection
+
+    @app.get("/api/scan/{scan_id}/inspection", response_model=BrowserInspection)
+    def get_inspection(scan_id: str) -> BrowserInspection:
+        inspection = app.state.browser_inspections.get(scan_id)
+        if inspection is None:
+            raise HTTPException(status_code=404, detail="browser inspection not found")
+        return inspection
 
     @app.get("/messages/{message_id}/trustgraph")
     def get_trustgraph(message_id: str) -> dict:

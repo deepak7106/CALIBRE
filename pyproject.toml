@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0,<9"]
+browser = ["playwright>=1.49,<2"]
 
 [project.scripts]
 trustshield = "trustshield.cli:main"
